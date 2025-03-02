@@ -39,21 +39,22 @@ document.addEventListener('DOMContentLoaded', () => {
     uploadArea.addEventListener('dragover', handleDragOver);
     uploadArea.addEventListener('dragleave', handleDragLeave);
     uploadArea.addEventListener('drop', handleDrop);
-    uploadBtn.addEventListener('click', uploadVideo);
     startDetectionBtn.addEventListener('click', startDetection);
     closeModal.addEventListener('click', () => modal.style.display = 'none');
     closeModalBtn.addEventListener('click', () => modal.style.display = 'none');
     downloadChallanBtn.addEventListener('click', downloadChallan);
 
-    // Initialize the application
-    fetchViolations();
+    // Hide the upload button since we've integrated upload + detection
+    if (uploadBtn) {
+        uploadBtn.style.display = 'none';
+    }
 
     // File handling functions
     function handleFileSelect(e) {
         const file = e.target.files[0];
         if (file) {
-            console.log('File selected:', file.name);
             processSelectedFile(file);
+            uploadVideo(); // Automatically trigger upload when a file is selected
         }
     }
 
@@ -61,14 +62,12 @@ document.addEventListener('DOMContentLoaded', () => {
         e.preventDefault();
         e.stopPropagation();
         uploadArea.classList.add('active');
-        console.log('Drag over event');
     }
 
     function handleDragLeave(e) {
         e.preventDefault();
         e.stopPropagation();
         uploadArea.classList.remove('active');
-        console.log('Drag leave event');
     }
 
     function handleDrop(e) {
@@ -78,11 +77,10 @@ document.addEventListener('DOMContentLoaded', () => {
         
         const file = e.dataTransfer.files[0];
         if (file && file.type.startsWith('video/')) {
-            console.log('File dropped:', file.name);
             processSelectedFile(file);
+            uploadVideo(); // Automatically trigger upload when a file is dropped
         } else {
             showToast('Please upload a valid video file');
-            console.log('Invalid file type dropped');
         }
     }
 
@@ -91,7 +89,9 @@ document.addEventListener('DOMContentLoaded', () => {
         const videoUrl = URL.createObjectURL(file);
         previewPlayer.src = videoUrl;
         videoPreview.style.display = 'block';
-        uploadBtn.disabled = false;
+        if (uploadBtn) {
+            uploadBtn.disabled = false;
+        }
 
         // Update upload area to show selected file name
         const fileName = document.createElement('p');
@@ -105,21 +105,20 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         
         uploadArea.appendChild(fileName);
-        console.log('File processed:', file.name);
     }
 
     // API interaction functions
     async function uploadVideo() {
         if (!selectedFile) {
             showToast('Please select a video file first');
-            console.log('Upload attempt without file selection');
             return;
         }
 
         try {
             progressContainer.style.display = 'block';
-            uploadBtn.disabled = true;
-            console.log('Uploading video:', selectedFile.name);
+            if (uploadBtn) {
+                uploadBtn.disabled = true;
+            }
 
             const formData = new FormData();
             formData.append('file', selectedFile);
@@ -132,42 +131,43 @@ document.addEventListener('DOMContentLoaded', () => {
                     const percentComplete = Math.round((e.loaded / e.total) * 100);
                     progressBar.style.width = `${percentComplete}%`;
                     progressText.textContent = `${percentComplete}%`;
-                    console.log('Upload progress:', percentComplete + '%');
                 }
             };
 
             xhr.onload = function() {
                 if (xhr.status >= 200 && xhr.status < 300) {
                     const response = JSON.parse(xhr.responseText);
-                    uploadedVideoPath = response.path; // Use path instead of filename
+                    // Use path instead of filename for the video_path
+                    uploadedVideoPath = response.path;
                     showToast('Video uploaded successfully');
                     startDetectionBtn.disabled = false;
-                    console.log('Video uploaded successfully:', uploadedVideoPath);
                 } else {
                     showToast('Upload failed: ' + xhr.statusText);
-                    uploadBtn.disabled = false;
-                    console.error('Upload failed:', xhr.statusText);
+                    if (uploadBtn) {
+                        uploadBtn.disabled = false;
+                    }
                 }
             };
 
             xhr.onerror = function() {
                 showToast('Upload failed. Please try again');
-                uploadBtn.disabled = false;
-                console.error('Upload error occurred');
+                if (uploadBtn) {
+                    uploadBtn.disabled = false;
+                }
             };
 
             xhr.send(formData);
         } catch (error) {
             showToast('Error uploading video: ' + error.message);
-            uploadBtn.disabled = false;
-            console.error('Error uploading video:', error.message);
+            if (uploadBtn) {
+                uploadBtn.disabled = false;
+            }
         }
     }
 
     async function startDetection() {
         if (!uploadedVideoPath) {
             showToast('Please upload a video first');
-            console.log('Detection attempt without video upload');
             return;
         }
 
@@ -175,8 +175,8 @@ document.addEventListener('DOMContentLoaded', () => {
             startDetectionBtn.disabled = true;
             detectionLoader.style.display = 'flex';
             violationsContainer.innerHTML = '';
-            console.log('Starting detection for video:', uploadedVideoPath);
 
+            // Create formData with the exact field name expected by the backend
             const formData = new FormData();
             formData.append('video_path', uploadedVideoPath);
 
@@ -191,27 +191,34 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const data = await response.json();
             
-            if (data.status === 'processing') {
-                showToast('Detection started. Polling for results...');
-                console.log('Detection started, polling for results...');
+            // Show toast indicating detection has started
+            showToast('Detection started. This may take some time...');
+            
+            // Check if there are any violations
+            if (data.violations_count > 0) {
+                // Start polling for violations only if there are violations
                 startPollingForViolations();
             } else {
-                showToast('Detection failed to start');
-                startDetectionBtn.disabled = false;
+                // No violations found, show appropriate message
+                showToast('Detection complete. No new violations found.');
                 detectionLoader.style.display = 'none';
-                console.error('Detection failed to start');
+                startDetectionBtn.disabled = false;
             }
         } catch (error) {
             showToast('Error starting detection: ' + error.message);
             startDetectionBtn.disabled = false;
             detectionLoader.style.display = 'none';
-            console.error('Error starting detection:', error.message);
         }
     }
 
     function startPollingForViolations() {
+        // Initial count of violations before polling
+        const initialViolationCount = currentViolations.length;
         let pollCount = 0;
         const maxPolls = 60; // Stop polling after 5 minutes (5 seconds interval * 60)
+        
+        // Show loading indicator
+        detectionLoader.style.display = 'flex';
         
         if (pollingInterval) {
             clearInterval(pollingInterval);
@@ -219,26 +226,30 @@ document.addEventListener('DOMContentLoaded', () => {
         
         pollingInterval = setInterval(async () => {
             pollCount++;
-            console.log('Polling for violations, attempt:', pollCount);
             
             try {
                 const newViolations = await fetchViolations();
                 
-                if (newViolations.length > currentViolations.length || pollCount >= maxPolls) {
+                // Check if we found new violations or reached max polling attempts
+                if (newViolations.length > initialViolationCount || pollCount >= maxPolls) {
+                    // Stop polling
                     clearInterval(pollingInterval);
                     detectionLoader.style.display = 'none';
                     startDetectionBtn.disabled = false;
                     
-                    if (newViolations.length > currentViolations.length) {
-                        showToast('New violations detected!');
-                        console.log('New violations detected:', newViolations.length - currentViolations.length);
+                    // Show appropriate message
+                    if (newViolations.length > initialViolationCount) {
+                        showToast(`Detection complete! Found ${newViolations.length - initialViolationCount} new violations.`);
                     } else {
                         showToast('Detection complete. No new violations found.');
-                        console.log('Detection complete. No new violations found.');
                     }
+                } else if (pollCount % 4 === 0) {
+                    // Every 20 seconds (4 polls * 5 seconds), update the user
+                    showToast('Still processing video... Please wait.');
                 }
             } catch (error) {
                 console.error('Error polling for violations:', error);
+                showToast('Error checking for violations. Still trying...');
             }
         }, 5000); // Poll every 5 seconds
     }
@@ -260,7 +271,6 @@ document.addEventListener('DOMContentLoaded', () => {
             
             // Display violations
             displayViolations(violations, previousCount);
-            console.log('Fetched violations:', violations.length);
             
             return violations;
         } catch (error) {
@@ -273,12 +283,11 @@ document.addEventListener('DOMContentLoaded', () => {
     async function generateChallan(violationId) {
         try {
             showToast('Generating challan...');
-            console.log('Generating challan for violation ID:', violationId);
             
             const response = await fetch(`${GENERATE_CHALLAN_URL}/${violationId}`, {
                 method: 'GET',
                 headers: {
-                    'Accept': 'application/json'
+                    'Accept': 'application/pdf'
                 }
             });
             
@@ -286,32 +295,21 @@ document.addEventListener('DOMContentLoaded', () => {
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
             
-            const challanData = await response.json();
+            const blob = await response.blob();
+            const url = window.URL.createObjectURL(blob);
             
-            // Display challan in modal
-            modalTitle.textContent = 'Challan Generated';
-            modalBody.innerHTML = `
-                <div class="challan-details">
-                    <p><strong>Challan ID:</strong> ${challanData.id || violationId}</p>
-                    <p><strong>Issued Date:</strong> ${challanData.issued_date || new Date().toLocaleString()}</p>
-                    <p><strong>Violation Type:</strong> ${challanData.violation_type || 'Traffic Violation'}</p>
-                    <p><strong>License Plate:</strong> ${challanData.license_plate || 'N/A'}</p>
-                    <p><strong>Vehicle Type:</strong> ${challanData.vehicle_type || 'N/A'}</p>
-                    <p><strong>Fine Amount:</strong> ₹${challanData.fine_amount || '500'}</p>
-                    <p><strong>Payment Due:</strong> ${challanData.payment_due || '15 days'}</p>
-                </div>
-                <div class="challan-image">
-                    <img src="${API_BASE_URL}/${challanData.image_path || ''}" alt="Violation Image">
-                </div>
-            `;
+            // Automatically download the challan PDF
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `Challan_${violationId}.pdf`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            window.URL.revokeObjectURL(url);
             
-            modal.style.display = 'flex';
-            console.log('Challan generated:', challanData);
-            
-            return challanData;
+            showToast('Challan downloaded successfully');
         } catch (error) {
             showToast('Error generating challan: ' + error.message);
-            console.error('Error generating challan:', error.message);
             throw error;
         }
     }
@@ -321,14 +319,12 @@ document.addEventListener('DOMContentLoaded', () => {
         // For now, we'll just show a toast notification
         showToast('Challan PDF downloaded');
         modal.style.display = 'none';
-        console.log('Challan PDF downloaded');
     }
 
     // UI functions
     function displayViolations(violations, previousCount) {
         if (!violations.length) {
             violationsContainer.innerHTML = '<p class="no-violations">No violations detected yet.</p>';
-            console.log('No violations detected yet.');
             return;
         }
         
@@ -374,14 +370,12 @@ document.addEventListener('DOMContentLoaded', () => {
             
             // Add to container
             violationsContainer.appendChild(violationCard);
-            console.log('Violation card added:', violation.id);
         });
     }
 
     function showToast(message) {
         toast.textContent = message;
         toast.classList.add('show');
-        console.log('Toast message:', message);
         
         setTimeout(() => {
             toast.classList.remove('show');

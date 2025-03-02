@@ -1,6 +1,8 @@
+# main.py
 from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 import uvicorn
 import os
 import shutil
@@ -28,6 +30,10 @@ os.makedirs("models", exist_ok=True)
 os.makedirs("violations", exist_ok=True)
 os.makedirs("challans", exist_ok=True)
 
+# Mount static directories to serve files
+app.mount("/violations", StaticFiles(directory="violations"), name="violations")
+app.mount("/challans", StaticFiles(directory="challans"), name="challans")
+
 # Initialize detection models when server starts
 @app.on_event("startup")
 async def startup_event():
@@ -53,19 +59,35 @@ async def upload_video(file: UploadFile = File(...)):
     return {"filename": file.filename, "path": file_path}
 
 @app.post("/detect")
-async def detect_violations(
-    background_tasks: BackgroundTasks,
-    video_path: str = Form(...)
-):
+async def detect_violations(video_path: str = Form(...)):
     print(f"Starting detection for video: {video_path}")
-    # Process video in background to avoid timeout
-    background_tasks.add_task(
-        process_video_and_notify,
-        video_path
-    )
-    print("Detection task added to background.")
     
-    return {"message": "Detection started in background"}
+    # Run detection synchronously (this will take time but will complete eventually)
+    violations = detection.detect_violations(video_path)
+    print(f"Detected {len(violations)} violations.")
+    
+    # Save violations to database
+    for violation in violations:
+        print(f"Saving violation ID {violation.get('id')} to database.")
+        database.save_violation(violation)
+    
+    # Send email notifications to each violator
+    for violation in violations:
+        if violation.get("email"):
+            print(f"Sending email to {violation['email']} for violation ID {violation.get('id')}.")
+            email_service.send_violation_email(violation["email"], [violation])
+    
+    # Clean up the temporary video file
+    if os.path.exists(video_path):
+        os.remove(video_path)
+        print(f"Temporary video file {video_path} removed.")
+    
+    # Return the completion response with violation count
+    return {
+        "status": "completed", 
+        "message": "Detection completed successfully",
+        "violations_count": len(violations)
+    }
 
 @app.get("/violations")
 async def get_violations():
