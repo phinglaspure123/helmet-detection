@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Traffic Violation Detection System</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Traffic Violation Detection System</h1>
+        </header>
+
+        <main>
+            <section class="upload-section">
+                <h2>Upload Video</h2>
+                <div class="upload-container" id="upload-container">
+                    <div class="upload-area" id="upload-area">
+                        <i class="fas fa-cloud-upload-alt"></i>
+                        <p>Drag & Drop or Click to Upload Video</p>
+                        <input type="file" id="video-upload" accept="video/*" hidden>
+                    </div>
+                    <div class="progress-container" id="progress-container">
+                        <div class="progress-bar" id="progress-bar"></div>
+                        <p id="progress-text">0%</p>
+                    </div>
+                </div>
+                <div class="video-preview" id="video-preview">
+                    <video id="preview-player" controls></video>
+                </div>
+                <div class="action-buttons">
+                    <button id="upload-btn" class="btn primary-btn" disabled>Upload Video</button>
+                    <button id="start-detection-btn" class="btn secondary-btn" disabled>Start Detection</button>
+                </div>
+            </section>
+
+            <section class="violations-section">
+                <h2>Detected Violations</h2>
+                <div class="loader" id="detection-loader">
+                    <div class="spinner"></div>
+                    <p>Detection in progress...</p>
+                </div>
+                <div class="violations-container" id="violations-container">
+                    <!-- Violations will be displayed here dynamically -->
+                </div>
+            </section>
+        </main>
+
+        <footer>
+            <p>&copy; 2025 Traffic Violation Detection System</p>
+        </footer>
+    </div>
+
+    <!-- Templates -->
+    <template id="violation-card-template">
+        <div class="violation-card">
+            <div class="violation-image">
+                <img src="" alt="Violation Image">
+            </div>
+            <div class="violation-details">
+                <h3 class="violation-type"></h3>
+                <p><strong>ID:</strong> <span class="violation-id"></span></p>
+                <p><strong>Timestamp:</strong> <span class="violation-timestamp"></span></p>
+                <p><strong>License Plate:</strong> <span class="violation-license"></span></p>
+                <p><strong>Vehicle Type:</strong> <span class="violation-vehicle"></span></p>
+                <p><strong>Confidence:</strong> <span class="violation-confidence"></span></p>
+                <p><strong>Email:</strong> <span class="violation-email"></span></p>
+                <button class="btn generate-challan-btn" data-id="">Generate Challan</button>
+            </div>
+        </div>
+    </template>
+
+    <div id="toast" class="toast"></div>
+    <div id="modal" class="modal">
+        <div class="modal-content">
+            <span class="close-modal">&times;</span>
+            <h2 id="modal-title">Challan Generated</h2>
+            <div id="modal-body">
+                <!-- Challan details will be shown here -->
+            </div>
+            <div class="modal-footer">
+                <button id="close-modal-btn" class="btn primary-btn">Close</button>
+                <button id="download-challan-btn" class="btn secondary-btn">Download PDF</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
