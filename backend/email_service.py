@@ -11,7 +11,7 @@ import pdf
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587
 SMTP_USERNAME = "helmetdetection12@gmail.com"  # Replace with your email
-SMTP_PASSWORD = "helmet_detection01"     # Replace with your app password (for Gmail)
+SMTP_PASSWORD = "auzj iroi oidh islh"     # Replace with your app password (for Gmail)
 SENDER_EMAIL = "helmetdetection12@gmail.com"   # Replace with your email
 
 def send_violation_email(recipient_email, violations):

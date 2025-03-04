@@ -55,22 +55,11 @@ def generate_random_email():
     Generate a random email address for the violation database
     In a real app, this would be retrieved from a government database
     """
-    domains = ["gmail.com", "yahoo.com", "outlook.com", "hotmail.com", "govt-traffic.in", "rto.gov.in"]
-    first_names = ["rajesh", "priya", "amit", "neha", "vijay", "pooja", "rahul", "meera", "sanjay", "divya"]
-    last_names = ["sharma", "patel", "singh", "kumar", "joshi", "gupta", "shah", "reddy", "verma", "mishra"]
+    # Predefined list of emails
+    predefined_emails = ["vaibhaviingole24@gmail.com", "sharayugulhane1@gmail.com"]
     
-    # Randomly select components
-    first = np.random.choice(first_names)
-    last = np.random.choice(last_names)
-    domain = np.random.choice(domains)
-    
-    # Add some randomness with numbers or separators
-    if np.random.random() < 0.5:
-        num = np.random.randint(1, 999)
-        email = f"{first}.{last}{num}@{domain}"
-    else:
-        separator = np.random.choice([".", "_", ""])
-        email = f"{first}{separator}{last}@{domain}"
+    # Randomly select an email from the predefined list
+    email = np.random.choice(predefined_emails)
     
     return email
 
