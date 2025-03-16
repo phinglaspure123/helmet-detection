@@ -1,0 +1,10 @@
+# Backend Python cache
+backend/__pycache__/
+backend/**/__pycache__/
+
+# Keep models folder but ignore its contents
+models/*
+!models/.gitkeep
+
+# Ignore YOLOv8 model file
+backend/yolov8n.pt
