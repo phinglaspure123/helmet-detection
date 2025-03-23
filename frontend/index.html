@@ -35,6 +35,23 @@
                 </div>
             </section>
 
+            <section class="live-stream-section">
+                <h2>Live Stream Detection</h2>
+                <div class="live-stream-container">
+                    <div class="stream-preview">
+                        <img id="live-stream-preview" src="" alt="Live Stream" style="display: none;">
+                        <div id="stream-loader" class="stream-loader" style="display: none;">
+                            <div class="spinner"></div>
+                            <p>Connecting to stream...</p>
+                        </div>
+                    </div>
+                    <div class="stream-controls">
+                        <button id="start-stream-btn" class="btn primary-btn" onclick="console.log('Button clicked')">Start Live Stream</button>
+                        <button id="stop-stream-btn" class="btn danger-btn" disabled>Stop Stream</button>
+                    </div>
+                </div>
+            </section>
+
             <section class="violations-section">
                 <h2>Detected Violations</h2>
                 <div class="loader" id="detection-loader">

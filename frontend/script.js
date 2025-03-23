@@ -1,10 +1,15 @@
+console.log('Script loaded');
+
 document.addEventListener('DOMContentLoaded', () => {
+    console.log('DOM loaded');
     // API URLs
     const API_BASE_URL = 'http://127.0.0.1:8000';
     const UPLOAD_VIDEO_URL = `${API_BASE_URL}/upload-video`;
     const DETECT_URL = `${API_BASE_URL}/detect`;
     const VIOLATIONS_URL = `${API_BASE_URL}/violations`;
     const GENERATE_CHALLAN_URL = `${API_BASE_URL}/generate-challan`;
+    const LIVE_STREAM_START_URL = `${API_BASE_URL}/live-stream/start`;
+    const LIVE_STREAM_STOP_URL = `${API_BASE_URL}/live-stream/stop`;
 
     // DOM Elements
     const uploadArea = document.getElementById('upload-area');
@@ -27,11 +32,19 @@ document.addEventListener('DOMContentLoaded', () => {
     const modalTitle = document.getElementById('modal-title');
     const modalBody = document.getElementById('modal-body');
 
+    // Live stream elements
+    const startStreamBtn = document.getElementById('start-stream-btn');
+    const stopStreamBtn = document.getElementById('stop-stream-btn');
+    const liveStreamPreview = document.getElementById('live-stream-preview');
+    const streamLoader = document.getElementById('stream-loader');
+    const streamPlaceholder = document.querySelector('.stream-placeholder');
+
     // State variables
     let selectedFile = null;
     let uploadedVideoPath = null;
     let pollingInterval = null;
     let currentViolations = [];
+    let streamActive = false;
 
     // Event Listeners
     uploadArea.addEventListener('click', () => fileInput.click());
@@ -381,4 +394,141 @@ document.addEventListener('DOMContentLoaded', () => {
             toast.classList.remove('show');
         }, 3000);
     }
-});
+
+    // Remove any existing stream button event listeners
+    // and replace with this new implementation
+    function initializeStreamControls() {
+        const startStreamBtn = document.getElementById('start-stream-btn');
+        const stopStreamBtn = document.getElementById('stop-stream-btn');
+        const streamPreview = document.getElementById('live-stream-preview');
+        const streamLoader = document.getElementById('stream-loader');
+        
+        // Add state tracking
+        let isStoppingStream = false;
+        let streamErrorCount = 0;
+        const MAX_ERROR_RETRIES = 3;
+
+        console.log('Initializing stream controls');
+        console.log('Start button found:', !!startStreamBtn);
+        console.log('Stop button found:', !!stopStreamBtn);
+
+        // Define the stopLiveStream function
+        async function stopLiveStream(isError = false) {
+            // Prevent multiple stop requests
+            if (isStoppingStream) {
+                console.log('Stop already in progress, skipping');
+                return;
+            }
+
+            console.log('Stopping stream due to', isError ? 'error' : 'user action');
+            isStoppingStream = true;
+
+            try {
+                // Update UI first
+                startStreamBtn.disabled = false;
+                stopStreamBtn.disabled = true;
+                streamPreview.style.display = 'none';
+                streamLoader.style.display = 'none';
+                
+                // Only try to stop the stream if it wasn't due to a connection error
+                if (!isError) {
+                    const response = await fetch(`${API_BASE_URL}/live-stream/stop`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        }
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error(`Failed to stop stream: ${response.status}`);
+                    }
+                }
+                
+                showToast('Stream stopped');
+            } catch (error) {
+                console.error('Error stopping stream:', error);
+                // Don't show error toast if it was already an error condition
+                if (!isError) {
+                    showToast('Error stopping stream');
+                }
+            } finally {
+                isStoppingStream = false;
+                streamErrorCount = 0; // Reset error count
+            }
+        }
+
+        if (startStreamBtn) {
+            startStreamBtn.addEventListener('click', function() {
+                console.log('Start button clicked');
+                streamLoader.style.display = 'flex';
+                streamErrorCount = 0; // Reset error count on new start
+                
+                fetch(`${API_BASE_URL}/live-stream/start`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                })
+                .then(response => {
+                    console.log('Start stream response:', response.status);
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    
+                    // Update UI
+                    startStreamBtn.disabled = true;
+                    stopStreamBtn.disabled = false;
+                    
+                    // Set up the stream display
+                    streamLoader.style.display = 'none';
+                    streamPreview.style.display = 'block';
+                    
+                    // Use the feed endpoint for the stream
+                    streamPreview.src = `${API_BASE_URL}/live-stream/feed`;
+                    
+                    // Add error handler for stream
+                    streamPreview.onerror = (error) => {
+                        console.error('Stream connection failed:', error);
+                        streamErrorCount++;
+                        
+                        if (streamErrorCount <= MAX_ERROR_RETRIES) {
+                            console.log(`Retrying stream (attempt ${streamErrorCount})`);
+                            showToast(`Stream connection lost. Retrying... (${streamErrorCount}/${MAX_ERROR_RETRIES})`);
+                            
+                            // Retry the stream connection with exponential backoff
+                            setTimeout(() => {
+                                if (streamPreview) {
+                                    streamPreview.src = `${API_BASE_URL}/live-stream/feed?t=${Date.now()}`;
+                                }
+                            }, 1000 * Math.pow(2, streamErrorCount - 1));
+                        } else {
+                            stopLiveStream(true);
+                            showToast('Stream connection lost after multiple retries. Please try again.');
+                        }
+                    };
+                    
+                    // Add a load event handler
+                    streamPreview.onload = () => {
+                        console.log('Stream connected successfully');
+                        streamErrorCount = 0; // Reset error count on successful connection
+                        streamLoader.style.display = 'none';
+                    };
+                    
+                    showToast('Live stream started');
+                })
+                .catch(error => {
+                    console.error('Error starting stream:', error);
+                    streamLoader.style.display = 'none';
+                    showToast('Failed to start stream: ' + error.message);
+                });
+            });
+        }
+
+        if (stopStreamBtn) {
+            stopStreamBtn.addEventListener('click', () => stopLiveStream(false));
+        }
+    }
+
+    // Call the initialization function
+    initializeStreamControls();
+})

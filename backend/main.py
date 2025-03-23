@@ -1,12 +1,13 @@
 # main.py
 from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 import os
 import shutil
 from typing import Optional
+import logging
 
 # Import modules
 import detection
@@ -41,6 +42,13 @@ async def startup_event():
     # This ensures models are downloaded and initialized when the server starts
     detection.init_models()
     print("Detection models initialized.")
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Add global variable for stream status
+stream_active = False
 
 @app.get("/")
 def read_root():
@@ -128,6 +136,75 @@ async def process_live_stream(background_tasks: BackgroundTasks):
     background_tasks.add_task(detection.process_live_stream)
     print("Live stream detection task added to background.")
     return {"message": "Live stream detection started"}
+
+@app.post("/live-stream/start")
+async def start_live_stream():
+    global stream_active
+    logger.info("Live stream start requested")
+    
+    if stream_active:
+        logger.info("Stream already active")
+        return {"message": "Stream already active"}
+    
+    stream_active = True
+    logger.info("Starting new stream")
+    
+    # Return streaming response
+    return StreamingResponse(
+        detection.process_live_stream(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'Pragma': 'no-cache',
+            'Expires': '0',
+            'Access-Control-Allow-Origin': '*',
+            'Connection': 'keep-alive'
+        }
+    )
+
+@app.post("/live-stream/stop")
+async def stop_live_stream():
+    global stream_active
+    logger.info("Live stream stop requested")
+    
+    if not stream_active:
+        logger.info("No active stream to stop")
+        return {"message": "No active stream to stop"}
+    
+    logger.info("Stopping active stream")
+    detection.stop_live_stream()
+    stream_active = False
+    
+    return {"message": "Stream stopped successfully"}
+
+@app.get("/stream-status")
+async def stream_status():
+    """Check if stream is active"""
+    return {"active": stream_active}
+
+@app.get("/live-stream/feed")
+async def get_live_stream():
+    """
+    Stream the live video feed
+    """
+    global stream_active
+    logger.info("Live stream feed requested")
+    
+    if not stream_active:
+        logger.info("No active stream")
+        return {"error": "No active stream"}
+    
+    return StreamingResponse(
+        detection.process_live_stream(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'Pragma': 'no-cache',
+            'Expires': '0',
+            'Access-Control-Allow-Origin': '*',
+            'Connection': 'keep-alive'
+        }
+    )
 
 async def process_video_and_notify(video_path: str):
     print(f"Processing video for violations: {video_path}")

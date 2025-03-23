@@ -14,6 +14,7 @@ from pathlib import Path
 MODELS_DIR = "models"
 YOLO_MODEL_PATH = os.path.join(MODELS_DIR, "yolov8n.pt")
 VIOLATIONS_DIR = "violations"
+stream_active = False
 
 # Create necessary directories
 os.makedirs(MODELS_DIR, exist_ok=True)
@@ -391,7 +392,9 @@ def process_live_stream():
     """
     Process a live video stream from camera
     """
-    global yolo_model
+    global yolo_model, stream_active
+    
+    print("Starting live stream processing...")
     
     if yolo_model is None:
         print("YOLO model not initialized. Trying to load...")
@@ -399,52 +402,112 @@ def process_live_stream():
         
     if yolo_model is None:
         print("Failed to load YOLO model. Cannot process live stream.")
+        yield b'--frame\r\nContent-Type: text/plain\r\n\r\nError: Failed to load detection model\r\n'
         return
     
-    # Open webcam
-    cap = cv2.VideoCapture(0)  # 0 for default camera
+    # Set stream as active
+    stream_active = True
+    print(f"Stream active status: {stream_active}")
     
-    if not cap.isOpened():
-        print("Error: Could not open webcam")
+    # Open webcam with retries
+    max_retries = 3
+    retry_count = 0
+    cap = None
+    
+    while retry_count < max_retries and stream_active:
+        try:
+            cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)  # Try using DirectShow
+            if cap.isOpened():
+                print("Camera opened successfully")
+                break
+        except Exception as e:
+            print(f"Error opening camera (attempt {retry_count + 1}): {e}")
+            retry_count += 1
+            time.sleep(1)
+    
+    if not cap or not cap.isOpened():
+        print("Error: Could not open webcam after multiple attempts")
+        yield b'--frame\r\nContent-Type: text/plain\r\n\r\nError: Could not access camera\r\n'
+        stream_active = False
         return
     
-    frame_count = 0
-    processed_vehicles = set()  # Track vehicles we've already processed
-    potential_violations = {}  # Track potential violations for confirmation
+    frame_error_count = 0
+    MAX_FRAME_ERRORS = 5
     
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        
-        frame_count += 1
-        
-        # Perform detection
-        results = yolo_model(frame, classes=[0, 3], conf=0.5)  # Classes 0 (person), 3 (motorcycle)
-        
-        # Process results
-        detected_objects = process_results(results, frame)
-        
-        # Check for violations
-        frame_violations = check_violations(detected_objects, frame, processed_vehicles, potential_violations)
-        
-        # Save violations to database
-        if frame_violations:
-            import database
-            for violation in frame_violations:
-                database.save_violation(violation)
-                processed_vehicles.add(violation["license_plate"])
-        
-        # Display the frame with detections (for debugging)
-        # cv2.imshow("Live Detection", frame)
-        # if cv2.waitKey(1) & 0xFF == ord('q'):
-        #     break
-        
-        # Add a small delay to prevent CPU overload
-        time.sleep(0.1)
+    try:
+        while stream_active:
+            print("Reading frame...")
+            ret, frame = cap.read()
+            
+            if not ret:
+                frame_error_count += 1
+                print(f"Failed to read frame (error {frame_error_count}/{MAX_FRAME_ERRORS})")
+                
+                if frame_error_count >= MAX_FRAME_ERRORS:
+                    print("Too many frame errors, stopping stream")
+                    break
+                    
+                time.sleep(0.5)  # Wait before retrying
+                continue
+            
+            frame_error_count = 0  # Reset error count on successful frame
+            
+            # Process frame with detection logic
+            print("Processing frame with YOLO")
+            results = yolo_model(frame, classes=[0, 3], conf=0.5)
+            
+            # Draw detection boxes
+            for r in results:
+                boxes = r.boxes
+                for box in boxes:
+                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                    confidence = float(box.conf[0])
+                    class_id = int(box.cls[0])
+                    
+                    color = (0, 255, 0) if class_id == 0 else (0, 0, 255)
+                    cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
+                    
+                    label = f"{'Person' if class_id == 0 else 'Motorcycle'}: {confidence:.2f}"
+                    cv2.putText(frame, label, (int(x1), int(y1)-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+            
+            # Add timestamp
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            cv2.putText(frame, timestamp, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            
+            # Convert frame to JPEG
+            print("Encoding frame")
+            _, buffer = cv2.imencode('.jpg', frame)
+            frame_bytes = buffer.tobytes()
+            
+            # Yield the frame
+            print("Yielding frame")
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+            
+            time.sleep(0.03)  # ~30 FPS
+            
+    except Exception as e:
+        print(f"Stream error: {e}")
+        yield b'--frame\r\nContent-Type: text/plain\r\n\r\nError: Stream processing failed\r\n'
     
-    cap.release()
-    cv2.destroyAllWindows()
+    finally:
+        # Clean up
+        print("Cleaning up stream resources")
+        stream_active = False
+        if cap:
+            cap.release()
+            print("Camera released")
+        cv2.destroyAllWindows()
+        print("Stream ended")
+
+def stop_live_stream():
+    """
+    Stop the live stream
+    """
+    global stream_active
+    print("Request to stop stream received")
+    stream_active = False
+    print(f"Stream active status set to: {stream_active}")
 
 # Initialize models when module is imported
 init_models()
