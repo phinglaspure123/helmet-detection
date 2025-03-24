@@ -35,7 +35,21 @@ def save_violation(violation_data):
     """
     initialize_database()
     
-    # Generate a random email if not provided
+    # First check if this violation already exists
+    license_plate = violation_data.get('license_plate')
+    timestamp = violation_data.get('timestamp')
+    
+    # Read existing violations
+    existing_violations = get_all_violations()
+    
+    # Check for duplicate entry
+    for existing in existing_violations:
+        if (existing['license_plate'] == license_plate and 
+            existing['timestamp'] == timestamp):
+            print(f"Skipping duplicate violation: {license_plate} at {timestamp}")
+            return None
+    
+    # If not duplicate, proceed with saving
     if "email" not in violation_data or not violation_data["email"]:
         violation_data["email"] = generate_random_email()
     
@@ -47,7 +61,7 @@ def save_violation(violation_data):
         writer = csv.writer(file)
         writer.writerow(row_data)
     
-    print(f"Saved violation: {violation_data['id']}")
+    print(f"Saved new violation: {violation_data['id']} for plate {license_plate}")
     return violation_data
 
 def generate_random_email():
@@ -57,6 +71,7 @@ def generate_random_email():
     """
     # Predefined list of emails
     predefined_emails = ["vaibhaviingole24@gmail.com", "sharayugulhane1@gmail.com"]
+    # predefined_emails = [""]
     
     # Randomly select an email from the predefined list
     email = np.random.choice(predefined_emails)
@@ -182,3 +197,29 @@ def get_statistics():
         "by_vehicle_type": vehicle_types,
         "by_date": dates
     }
+
+def check_existing_violation(license_plate):
+    """
+    Check if a violation already exists for this license plate within last 24 hours
+    Returns True if violation exists, False otherwise
+    """
+    try:
+        violations = get_all_violations()
+        current_time = datetime.now()
+        
+        for violation in violations:
+            # Check if same license plate
+            if violation["license_plate"] == license_plate:
+                # Check if within last 24 hours
+                violation_time = datetime.strptime(violation["timestamp"], "%Y-%m-%d %H:%M:%S")
+                time_diff = current_time - violation_time
+                
+                if time_diff.total_seconds() < 24 * 3600:  # 24 hours in seconds
+                    print(f"Found existing violation for {license_plate} from {violation_time}")
+                    return True
+                    
+        return False
+        
+    except Exception as e:
+        print(f"Error checking existing violation: {e}")
+        return False

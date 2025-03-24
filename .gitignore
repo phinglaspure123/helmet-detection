@@ -8,3 +8,57 @@ models/*
 
 # Ignore YOLOv8 model file
 backend/yolov8n.pt
+
+# Ignore violation images
+backend/violations/*
+!backend/violations/.gitkeep
+ 
+# Environment variables
+.env
+backend/.env
+
+# Ignore generated challans
+challans/*
+!challans/.gitkeep
+
+# Ignore database files
+violations.csv
+
+# Ignore logs
+*.log
+
+# Ignore temporary files
+*.tmp
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+# Specific Python cache files
+backend/__pycache__/
+backend/**/__pycache__/
+backend/**/**/__pycache__/

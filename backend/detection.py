@@ -5,16 +5,33 @@ import numpy as np
 import uuid
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 import shutil
 import requests
 from pathlib import Path
+from difflib import SequenceMatcher
+from dotenv import load_dotenv
+from openai import OpenAI
+import base64
+import io
+from PIL import Image
+import json
+import re
+
+# Load environment variables
+load_dotenv()
+
+# Initialize OpenAI client
+client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 
 # Global variables
 MODELS_DIR = "models"
 YOLO_MODEL_PATH = os.path.join(MODELS_DIR, "yolov8n.pt")
 VIOLATIONS_DIR = "violations"
 stream_active = False
+PLATE_COOLDOWN = 60  # Reduce cooldown to 1 minute for testing
+MIN_PLATE_CONFIDENCE = 0.2  # Lower confidence threshold
+PLATE_SIMILARITY_THRESHOLD = 0.7  # Lower similarity threshold
 
 # Create necessary directories
 os.makedirs(MODELS_DIR, exist_ok=True)
@@ -22,6 +39,59 @@ os.makedirs(VIOLATIONS_DIR, exist_ok=True)
 
 # Initialize models
 yolo_model = None
+
+# Add new tracking set for unique violations
+processed_violations = set()
+
+# Add this as a class variable in the Detection class
+last_detection = {}  # Store last detection time for each license plate
+
+class VehicleTracker:
+    def __init__(self):
+        self.tracked_vehicles = {}
+    
+    def is_similar_plate(self, plate1, plate2):
+        """Check if two plate numbers are similar (handles OCR variations)"""
+        if not plate1 or not plate2:
+            return False
+        # Remove spaces and convert to uppercase
+        plate1 = ''.join(plate1.upper().split())
+        plate2 = ''.join(plate2.upper().split())
+        # Calculate similarity ratio
+        similarity = SequenceMatcher(None, plate1, plate2).ratio()
+        print(f"Comparing plates: {plate1} vs {plate2}, Similarity: {similarity}")
+        return similarity > PLATE_SIMILARITY_THRESHOLD
+    
+    def can_record_vehicle(self, plate_number):
+        """Check if a vehicle can be recorded based on cooldown and similarity"""
+        current_time = time.time()
+        print(f"Checking if can record plate: {plate_number}")
+        
+        # Check against all tracked vehicles
+        for tracked_plate, data in self.tracked_vehicles.items():
+            if self.is_similar_plate(plate_number, tracked_plate):
+                last_seen = data['last_seen']
+                time_diff = current_time - last_seen
+                print(f"Found similar plate: {tracked_plate}")
+                print(f"Time since last detection: {time_diff} seconds")
+                
+                if time_diff < PLATE_COOLDOWN:
+                    print(f"Skipping due to cooldown: {time_diff} seconds since last detection")
+                    return False
+                
+                print(f"Cooldown expired, allowing new detection")
+                self.tracked_vehicles[tracked_plate] = {
+                    'last_seen': current_time,
+                    'count': data['count'] + 1
+                }
+                return True
+        
+        print(f"New vehicle detected: {plate_number}")
+        self.tracked_vehicles[plate_number] = {
+            'last_seen': current_time,
+            'count': 1
+        }
+        return True
 
 class UniversalLicensePlateOCR:
     def __init__(self):
@@ -71,6 +141,9 @@ class UniversalLicensePlateOCR:
 
 ocr_system = UniversalLicensePlateOCR()
 
+# Create global instance of vehicle tracker
+vehicle_tracker = VehicleTracker()
+
 def download_yolo_model():
     """Download YOLOv8 model if not already present"""
     if os.path.exists(YOLO_MODEL_PATH):
@@ -115,36 +188,131 @@ def init_models():
         print(f"Error loading YOLO model: {e}")
         yolo_model = None
 
+def analyze_image_with_openai(image):
+    """
+    Analyze image using OpenAI's API with gpt-4o-mini model
+    """
+    # Convert image to base64
+    if isinstance(image, np.ndarray):
+        # Convert OpenCV image to PIL
+        image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+    
+    # Convert to base64
+    buffered = io.BytesIO()
+    image.save(buffered, format="JPEG")
+    image_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Analyze this image and tell me if the motorcycle rider is wearing a helmet and the license plate number. Return in this exact JSON format: {\"motorcycle_rider_without_helmet\": boolean, \"license_plate_number\": string}"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{image_base64}"
+                        }
+                    }
+                ]
+            }]
+        )
+        
+        content = response.choices[0].message.content
+        print(f"OpenAI Response: {content}")  # Debug log
+        
+        # Remove markdown formatting if present
+        content = content.replace('```json', '').replace('```', '').strip()
+        
+        try:
+            json_result = json.loads(content)
+            
+            # Strict response parsing rules
+            if "motorcycle_rider_without_helmet" in json_result:
+                wearing_helmet = not json_result["motorcycle_rider_without_helmet"]
+            elif "helmet_status" in json_result:
+                wearing_helmet = "not wearing" not in json_result["helmet_status"].lower()
+            elif "helmet" in json_result:
+                wearing_helmet = bool(json_result["helmet"])
+            else:
+                print("Warning: No valid helmet status found in response")
+                return None
+
+            # Get license plate with strict formatting
+            plate = None
+            if "license_plate_number" in json_result:
+                plate = json_result["license_plate_number"]
+            elif "license_plate" in json_result:
+                plate = json_result["license_plate"]
+                
+            if plate:
+                # Remove spaces and standardize format
+                plate = plate.replace(' ', '')
+                
+                # Validate plate format (adjust regex as needed for your region)
+                if not re.match(r'^[A-Z]{2}\d{2}[A-Z]{2}\d{4}$', plate):
+                    print(f"Warning: Invalid license plate format: {plate}")
+                    return None
+
+            result = {
+                "wearing_helmet": wearing_helmet,
+                "license_plate": plate,
+                "confidence": 0.9 if plate else 0.6
+            }
+            
+            print(f"Parsed result with strict rules: {result}")
+            return result
+            
+        except json.JSONDecodeError as e:
+            print(f"JSON parsing error: {e}")
+            return None
+            
+    except Exception as e:
+        print(f"OpenAI API Error: {str(e)}")
+        return None
+
+def extract_plate_from_text(text):
+    """Helper function to extract license plate from text response"""
+    # Look for common patterns in the response
+    import re
+    plate_patterns = [
+        r'plate.*?([A-Z]{2}[-\s]?\d{1,4}[-\s]?[A-Z]{1,2}[-\s]?\d{1,4})',
+        r'license.*?([A-Z]{2}[-\s]?\d{1,4}[-\s]?[A-Z]{1,2}[-\s]?\d{1,4})',
+        r'number.*?([A-Z]{2}[-\s]?\d{1,4}[-\s]?[A-Z]{1,2}[-\s]?\d{1,4})'
+    ]
+    
+    for pattern in plate_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return match.group(1).replace(' ', '').replace('-', '')
+    
+    return None
+
+def is_unique_violation(license_plate):
+    """
+    Check if this is a unique violation
+    """
+    if license_plate in processed_violations:
+        return False
+    processed_violations.add(license_plate)
+    return True
+
 def detect_violations(video_path):
     """
-    Process a video file to detect traffic violations (no helmet)
-    Returns a list of violation records
+    Process video file for violations using OpenAI
     """
-    global yolo_model
+    from database import save_violation, check_existing_violation  # Import at top
     
-    if yolo_model is None:
-        print("YOLO model not initialized. Trying to load...")
-        init_models()
-        
-    if yolo_model is None:
-        print("Failed to load YOLO model. Cannot detect violations.")
-        return []
-    
-    # Open video file
+    violations = []
     cap = cv2.VideoCapture(video_path)
+    
     if not cap.isOpened():
         print(f"Error: Could not open video {video_path}")
         return []
     
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    frame_interval = 30  # Process every 30th frame
     frame_count = 0
-    violations = []
-    processed_vehicles = set()  # Track vehicles we've already processed
-    potential_violations = {}  # Track potential violations for confirmation
-    
-    # Process every frame in the video
-    print(f"Video has {total_frames} frames, processing every frame")
     
     while cap.isOpened():
         ret, frame = cap.read()
@@ -152,28 +320,50 @@ def detect_violations(video_path):
             break
         
         frame_count += 1
+        if frame_count % frame_interval != 0:
+            continue
+
+        analysis = analyze_image_with_openai(frame)
+        if analysis:
+            has_violation = not analysis.get('wearing_helmet', True)
+            license_plate = analysis.get('license_plate')
             
-        print(f"Processing frame {frame_count}/{total_frames}")
-        
-        # Perform detection using YOLO
-        results = yolo_model(frame, classes=[0, 3], conf=0.25)  # Lower confidence threshold to catch more
-        
-        # Process results
-        detected_objects = process_results(results, frame)
-        
-        # Check for violations
-        frame_violations = check_violations(detected_objects, frame, processed_vehicles, potential_violations)
-        
-        # Add any confirmed violations found in this frame
-        violations.extend(frame_violations)
-        
-        # Update our set of processed vehicles
-        for v in frame_violations:
-            processed_vehicles.add(v["license_plate"])
-        
-    cap.release()
+            if license_plate:
+                license_plate = license_plate.replace(' ', '').replace('-', '')
+                
+                # Skip if license plate is invalid
+                if license_plate in ['N/A', 'unknown', None]:
+                    continue
+                    
+                # Only process if we have a violation and valid license plate
+                if has_violation:
+                    # Check if violation already exists in database
+                    if check_existing_violation(license_plate):
+                        print(f"Skipping duplicate violation for plate: {license_plate}")
+                        continue
+                    
+                    # Save new violation
+                    violation_id = str(uuid.uuid4())
+                    image_path = save_violation_image(frame, None, None, violation_id, license_plate)
+                    
+                    violation = {
+                        "id": violation_id,
+                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "violation_type": "No Helmet",
+                        "license_plate": license_plate,
+                        "vehicle_type": "Motorcycle",
+                        "confidence": 0.9,
+                        "image_path": image_path
+                    }
+                    
+                    try:
+                        save_violation(violation)
+                        violations.append(violation)
+                        print(f"New violation saved: {license_plate}")
+                    except Exception as e:
+                        print(f"Error saving violation: {e}")
     
-    print(f"Detected {len(violations)} violations")
+    cap.release()
     return violations
 
 def process_results(results, frame):
@@ -202,10 +392,6 @@ def process_results(results, frame):
     return detected_objects
 
 def check_violations(detected_objects, frame, processed_vehicles=None, potential_violations=None):
-    """
-    Check for traffic violations based on detected objects
-    Returns a list of confirmed violations in this frame
-    """
     if processed_vehicles is None:
         processed_vehicles = set()
     if potential_violations is None:
@@ -215,35 +401,33 @@ def check_violations(detected_objects, frame, processed_vehicles=None, potential
     motorcycles = [obj for obj in detected_objects if obj["class"] == "motorcycle"]
     persons = [obj for obj in detected_objects if obj["class"] == "person"]
     
-    # For each motorcycle, check if rider is wearing a helmet
+    print(f"Found {len(motorcycles)} motorcycles and {len(persons)} persons")
+    
     for motorcycle in motorcycles:
         m_x1, m_y1, m_x2, m_y2 = motorcycle["bbox"]
         
-        # Find nearby persons (potential riders)
         for person in persons:
             p_x1, p_y1, p_x2, p_y2 = person["bbox"]
             
-            # Check if person is near the motorcycle (likely the rider)
             if is_rider(motorcycle["bbox"], person["bbox"]):
-                # Check if the person's head region has a helmet
+                print("Found rider on motorcycle")
                 wearing_helmet = check_for_helmet(frame, person["bbox"])
                 
                 if not wearing_helmet:
+                    print("Rider not wearing helmet")
                     try:
-                        # Try to detect the license plate with our improved function
                         license_plate, plate_confidence = ocr_system.detect_license_plate(frame, motorcycle["bbox"])
+                        print(f"Detected plate: {license_plate} with confidence: {plate_confidence}")
                         
-                        # Skip if we've already processed this vehicle
-                        if license_plate in processed_vehicles:
+                        if plate_confidence < MIN_PLATE_CONFIDENCE:
+                            print(f"Skipping due to low confidence: {plate_confidence}")
                             continue
                         
-                        # Check if this is a potential violation
-                        if license_plate in potential_violations:
-                            # Confirm the violation if it persists
-                            violation_id = potential_violations.pop(license_plate)
+                        if vehicle_tracker.can_record_vehicle(license_plate):
+                            print(f"Recording violation for plate: {license_plate}")
+                            violation_id = str(uuid.uuid4())
                             image_path = save_violation_image(frame, motorcycle["bbox"], person["bbox"], violation_id, license_plate)
                             
-                            # Create a violation record
                             violation = {
                                 "id": violation_id,
                                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -256,15 +440,12 @@ def check_violations(detected_objects, frame, processed_vehicles=None, potential
                             }
                             
                             frame_violations.append(violation)
-                            print(f"Confirmed violation with license plate: {license_plate}")
-                        else:
-                            # Add to potential violations for confirmation in subsequent frames
-                            potential_violations[license_plate] = str(uuid.uuid4())
-                            print(f"Potential violation detected for license plate: {license_plate}")
+                            print(f"Violation recorded successfully")
                         
                     except Exception as e:
-                        print(f"Error detecting license plate: {e}")
+                        print(f"Error in violation processing: {str(e)}")
     
+    print(f"Found {len(frame_violations)} violations in this frame")
     return frame_violations
 
 def is_rider(motorcycle_bbox, person_bbox):
@@ -363,24 +544,24 @@ def check_for_helmet(frame, person_bbox):
 
 def save_violation_image(frame, motorcycle_bbox, person_bbox, violation_id, license_plate=None):
     """
-    Save an image of the violation with bounding boxes drawn
+    Save violation image with annotations
     """
-    # Create a copy of the frame
     img = frame.copy()
     
-    # Draw bounding boxes
-    m_x1, m_y1, m_x2, m_y2 = motorcycle_bbox
-    cv2.rectangle(img, (m_x1, m_y1), (m_x2, m_y2), (0, 0, 255), 2)  # Red for motorcycle
+    # Add text labels with better positioning and visibility
+    # Add semi-transparent black background for text
+    overlay = img.copy()
+    cv2.rectangle(overlay, (5, 5), (400, 100), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.3, img, 0.7, 0, img)
     
-    p_x1, p_y1, p_x2, p_y2 = person_bbox
-    cv2.rectangle(img, (p_x1, p_y1), (p_x2, p_y2), (255, 0, 0), 2)  # Blue for person
-    
-    # Add text labels
-    cv2.putText(img, "NO HELMET", (p_x1, p_y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
-    
-    # Add license plate text if available
+    # Add text with white color and black outline for better visibility
+    cv2.putText(img, "NO HELMET VIOLATION", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
     if license_plate:
-        cv2.putText(img, f"PLATE: {license_plate}", (m_x1, m_y2+25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+        cv2.putText(img, f"LICENSE PLATE: {license_plate}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+    
+    # Add timestamp
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cv2.putText(img, f"Time: {timestamp}", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
     
     # Save the image
     image_path = os.path.join(VIOLATIONS_DIR, f"violation_{violation_id}.jpg")
@@ -390,124 +571,100 @@ def save_violation_image(frame, motorcycle_bbox, person_bbox, violation_id, lice
 
 def process_live_stream():
     """
-    Process a live video stream from camera
+    Process live stream using OpenAI
     """
-    global yolo_model, stream_active
+    global stream_active
     
-    print("Starting live stream processing...")
-    
-    if yolo_model is None:
-        print("YOLO model not initialized. Trying to load...")
-        init_models()
-        
-    if yolo_model is None:
-        print("Failed to load YOLO model. Cannot process live stream.")
-        yield b'--frame\r\nContent-Type: text/plain\r\n\r\nError: Failed to load detection model\r\n'
-        return
-    
-    # Set stream as active
     stream_active = True
-    print(f"Stream active status: {stream_active}")
+    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
     
-    # Open webcam with retries
-    max_retries = 3
-    retry_count = 0
-    cap = None
-    
-    while retry_count < max_retries and stream_active:
-        try:
-            cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)  # Try using DirectShow
-            if cap.isOpened():
-                print("Camera opened successfully")
-                break
-        except Exception as e:
-            print(f"Error opening camera (attempt {retry_count + 1}): {e}")
-            retry_count += 1
-            time.sleep(1)
-    
-    if not cap or not cap.isOpened():
-        print("Error: Could not open webcam after multiple attempts")
+    if not cap.isOpened():
         yield b'--frame\r\nContent-Type: text/plain\r\n\r\nError: Could not access camera\r\n'
-        stream_active = False
         return
     
-    frame_error_count = 0
-    MAX_FRAME_ERRORS = 5
+    frame_skip = 30  # Process every 30th frame to avoid API rate limits
+    frame_count = 0
     
-    try:
-        while stream_active:
-            print("Reading frame...")
-            ret, frame = cap.read()
-            
-            if not ret:
-                frame_error_count += 1
-                print(f"Failed to read frame (error {frame_error_count}/{MAX_FRAME_ERRORS})")
-                
-                if frame_error_count >= MAX_FRAME_ERRORS:
-                    print("Too many frame errors, stopping stream")
-                    break
-                    
-                time.sleep(0.5)  # Wait before retrying
-                continue
-            
-            frame_error_count = 0  # Reset error count on successful frame
-            
-            # Process frame with detection logic
-            print("Processing frame with YOLO")
-            results = yolo_model(frame, classes=[0, 3], conf=0.5)
-            
-            # Draw detection boxes
-            for r in results:
-                boxes = r.boxes
-                for box in boxes:
-                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                    confidence = float(box.conf[0])
-                    class_id = int(box.cls[0])
-                    
-                    color = (0, 255, 0) if class_id == 0 else (0, 0, 255)
-                    cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
-                    
-                    label = f"{'Person' if class_id == 0 else 'Motorcycle'}: {confidence:.2f}"
-                    cv2.putText(frame, label, (int(x1), int(y1)-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-            
-            # Add timestamp
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            cv2.putText(frame, timestamp, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-            
-            # Convert frame to JPEG
-            print("Encoding frame")
-            _, buffer = cv2.imencode('.jpg', frame)
-            frame_bytes = buffer.tobytes()
-            
-            # Yield the frame
-            print("Yielding frame")
-            yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-            
-            time.sleep(0.03)  # ~30 FPS
-            
-    except Exception as e:
-        print(f"Stream error: {e}")
-        yield b'--frame\r\nContent-Type: text/plain\r\n\r\nError: Stream processing failed\r\n'
+    while stream_active:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        
+        frame_count += 1
+        
+        # Add basic annotations
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cv2.putText(frame, timestamp, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+        # Process every nth frame with OpenAI
+        if frame_count % frame_skip == 0:
+            analysis = analyze_image_with_openai(frame)
+            if analysis:
+                # Add analysis results to frame
+                if not analysis.get('wearing_helmet', True):
+                    cv2.putText(frame, "NO HELMET", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                if analysis.get('license_plate'):
+                    cv2.putText(frame, f"PLATE: {analysis['license_plate']}", (10, 90), 
+                              cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+        # Convert frame to JPEG
+        _, buffer = cv2.imencode('.jpg', frame)
+        frame_bytes = buffer.tobytes()
+        
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
     
-    finally:
-        # Clean up
-        print("Cleaning up stream resources")
-        stream_active = False
-        if cap:
-            cap.release()
-            print("Camera released")
-        cv2.destroyAllWindows()
-        print("Stream ended")
+    cap.release()
 
 def stop_live_stream():
     """
     Stop the live stream
     """
     global stream_active
-    print("Request to stop stream received")
     stream_active = False
-    print(f"Stream active status set to: {stream_active}")
+
+class Detection:
+    def __init__(self):
+        self.last_detection = {}
+    
+    def check_and_save_violation(self, frame_result, frame):
+        """
+        Check if enough time has passed since last violation for this license plate
+        """
+        from database import check_existing_violation  # Import at top
+        
+        license_plate = frame_result.get('license_plate')
+        if not license_plate:
+            return None
+            
+        # Check if violation exists in database
+        if check_existing_violation(license_plate):
+            print(f"Skipping duplicate detection for {license_plate}")
+            return None
+            
+        # Return frame result for further processing
+        return frame_result
+    
+    def process_frame(self, frame):
+        """
+        Process a single frame for violations
+        """
+        try:
+            frame_result = analyze_image_with_openai(frame)
+            print(f"Frame analysis result: {frame_result}")
+            
+            if frame_result and not frame_result.get('wearing_helmet'):
+                # Only check for duplicates, don't save here
+                return self.check_and_save_violation(frame_result, frame)
+            
+            return None
+            
+        except Exception as e:
+            print(f"Error processing frame: {str(e)}")
+            return None
+
+# Create an instance of the Detection class
+detector = Detection()
 
 # Initialize models when module is imported
 init_models()
