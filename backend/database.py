@@ -53,6 +53,10 @@ def save_violation(violation_data):
     if "email" not in violation_data or not violation_data["email"]:
         violation_data["email"] = generate_random_email()
     
+    # Ensure image path is relative to the workspace
+    if violation_data.get('image_path'):
+        violation_data['image_path'] = os.path.relpath(violation_data['image_path'])
+    
     # Prepare row data in correct order
     row_data = [violation_data.get(header, "") for header in CSV_HEADERS]
     
