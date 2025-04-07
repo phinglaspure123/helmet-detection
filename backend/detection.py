@@ -190,13 +190,14 @@ def init_models():
 
 def analyze_image_with_openai(image):
     """
-    Analyze image using OpenAI's API with gpt-4o-mini model with improved prompting
+    Analyze image using OpenAI's API with gpt-4o-mini model
     """
+    # Convert image to base64
     if isinstance(image, np.ndarray):
+        # Convert OpenCV image to PIL
         image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
     
-    width, height = image.size
-    
+    # Convert to base64
     buffered = io.BytesIO()
     image.save(buffered, format="JPEG")
     image_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
@@ -207,20 +208,7 @@ def analyze_image_with_openai(image):
             messages=[{
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "Analyze this motorcycle rider image with high precision:\n"
-                                           "1. Is the rider wearing a helmet? Look carefully at the head area.\n"
-                                           "2. What is the license plate number? Focus on the number plate area.\n"
-                                           "3. Provide precise relative coordinates (0.0 to 1.0) for:\n"
-                                           "   - Head region: Focus tightly on the rider's head area only\n"
-                                           "   - Vehicle region: Include rider and motorcycle, exclude background\n"
-                                           "   - License plate: Tight box around just the plate numbers\n"
-                                           "Return in JSON format: {\n"
-                                           "  \"motorcycle_rider_without_helmet\": boolean,\n"
-                                           "  \"license_plate_number\": string,\n"
-                                           "  \"head_bbox\": {\"x1\": float, \"y1\": float, \"x2\": float, \"y2\": float},\n"
-                                           "  \"vehicle_bbox\": {\"x1\": float, \"y1\": float, \"x2\": float, \"y2\": float},\n"
-                                           "  \"plate_bbox\": {\"x1\": float, \"y1\": float, \"x2\": float, \"y2\": float}\n"
-                                           "}\nNote: Ensure coordinates are precise and tight around the specified regions."},
+                    {"type": "text", "text": "Analyze this image and tell me if the motorcycle rider is wearing a helmet and the license plate number. Return in this exact JSON format: {\"motorcycle_rider_without_helmet\": boolean, \"license_plate_number\": string}"},
                     {
                         "type": "image_url",
                         "image_url": {
@@ -232,44 +220,43 @@ def analyze_image_with_openai(image):
         )
         
         content = response.choices[0].message.content
-        print(f"OpenAI Response: {content}")
+        print(f"OpenAI Response: {content}")  # Debug log
         
+        # Remove markdown formatting if present
         content = content.replace('```json', '').replace('```', '').strip()
         
         try:
             json_result = json.loads(content)
             
-            # Convert relative coordinates to absolute pixels
-            for bbox_key in ['head_bbox', 'vehicle_bbox', 'plate_bbox']:
-                if bbox_key in json_result and json_result[bbox_key]:
-                    bbox = json_result[bbox_key]
-                    json_result[bbox_key] = {
-                        'x1': int(bbox['x1'] * width),
-                        'y1': int(bbox['y1'] * height),
-                        'x2': int(bbox['x2'] * width),
-                        'y2': int(bbox['y2'] * height)
-                    }
-            
-            # Get helmet status and other information
-            wearing_helmet = not json_result.get("motorcycle_rider_without_helmet", True)
-            plate = json_result.get("license_plate_number", "")
-            
+            # Strict response parsing rules
+            if "motorcycle_rider_without_helmet" in json_result:
+                wearing_helmet = not json_result["motorcycle_rider_without_helmet"]
+            elif "helmet_status" in json_result:
+                wearing_helmet = "not wearing" not in json_result["helmet_status"].lower()
+            elif "helmet" in json_result:
+                wearing_helmet = bool(json_result["helmet"])
+            else:
+                print("Warning: No valid helmet status found in response")
+                return None
+
+            # Get license plate with strict formatting
+            plate = None
+            if "license_plate_number" in json_result:
+                plate = json_result["license_plate_number"]
+            elif "license_plate" in json_result:
+                plate = json_result["license_plate"]
+                
             if plate:
+                # Remove spaces and standardize format
                 plate = plate.replace(' ', '')
-                if not re.match(r'^[A-Z]{2}\d{2}[A-Z]{2}\d{4}$', plate):
-                    print(f"Warning: Invalid license plate format: {plate}")
-                    plate = None
 
             result = {
                 "wearing_helmet": wearing_helmet,
                 "license_plate": plate,
-                "confidence": 0.9 if plate else 0.6,
-                "head_bbox": json_result.get("head_bbox"),
-                "vehicle_bbox": json_result.get("vehicle_bbox"),
-                "plate_bbox": json_result.get("plate_bbox")
+                "confidence": 0.9 if plate else 0.6
             }
             
-            print(f"Parsed result with bounding boxes: {result}")
+            print(f"Parsed result with strict rules: {result}")
             return result
             
         except json.JSONDecodeError as e:
@@ -335,43 +322,59 @@ def detect_violations(video_path):
         if analysis:
             has_violation = not analysis.get('wearing_helmet', True)
             license_plate = analysis.get('license_plate')
+            vehicle_bbox = analysis.get('vehicle_bbox')
             
+            # Clean up license plate format
             if license_plate:
                 license_plate = license_plate.replace(' ', '').replace('-', '')
+            
+            # Skip if license plate is invalid
+            if not license_plate or license_plate in ['N/A', 'unknown']:
+                print(f"Skipping invalid license plate: {license_plate}")
+                continue
                 
-                # Skip if license plate is invalid
-                if license_plate in ['N/A', 'unknown', None]:
+            # Only process if we have a violation and valid license plate
+            if has_violation and license_plate:
+                # Check if violation already exists in database
+                if check_existing_violation(license_plate):
+                    print(f"Skipping duplicate violation for plate: {license_plate}")
                     continue
-                    
-                # Only process if we have a violation and valid license plate
-                if has_violation:
-                    # Check if violation already exists in database
-                    if check_existing_violation(license_plate):
-                        print(f"Skipping duplicate violation for plate: {license_plate}")
-                        continue
-                    
-                    # Generate violation ID and save image
-                    violation_id = str(uuid.uuid4())
-                    image_path = save_violation_image(frame, analysis, violation_id)
-                    
-                    violation = {
-                        "id": violation_id,
-                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "violation_type": "No Helmet",
-                        "license_plate": license_plate,
-                        "vehicle_type": "Motorcycle",
-                        "confidence": analysis.get('confidence', 0.9),
-                        "image_path": image_path
-                    }
-                    
-                    try:
-                        save_violation(violation)
-                        violations.append(violation)
-                        print(f"New violation saved: {license_plate}")
-                    except Exception as e:
-                        print(f"Error saving violation: {e}")
-    
+                
+                # If not in database, save as new violation
+                violation_id = str(uuid.uuid4())
+                
+                # Convert vehicle_bbox to the format expected by save_violation_image
+                motorcycle_bbox = None
+                if vehicle_bbox:
+                    motorcycle_bbox = (
+                        vehicle_bbox["x1"], 
+                        vehicle_bbox["y1"], 
+                        vehicle_bbox["x2"], 
+                        vehicle_bbox["y2"]
+                    )
+                
+                # Pass the actual vehicle bounding box to save_violation_image
+                image_path = save_violation_image(frame, motorcycle_bbox, None, violation_id, license_plate)
+                
+                violation = {
+                    "id": violation_id,
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "violation_type": "No Helmet",
+                    "license_plate": license_plate,
+                    "vehicle_type": "Motorcycle",
+                    "confidence": 0.9,
+                    "image_path": image_path
+                }
+                
+                try:
+                    save_violation(violation)
+                    violations.append(violation)
+                    print(f"New violation saved to database: {license_plate}")
+                except Exception as e:
+                    print(f"Error saving to database: {e}")
+        
     cap.release()
+    print(f"Detected {len(violations)} violations")
     return violations
 
 def process_results(results, frame):
@@ -677,16 +680,55 @@ def draw_bounding_boxes(frame, analysis_result):
     
     return img
 
-def save_violation_image(frame, analysis_result, violation_id, license_plate=None):
+def save_violation_image(frame, motorcycle_bbox, person_bbox, violation_id, license_plate=None):
     """
-    Save violation image with bounding box annotations
+    Save violation image with annotations
     """
-    # Add bounding boxes to the image
-    annotated_img = draw_bounding_boxes(frame, analysis_result)
+    img = frame.copy()
     
-    # Save the annotated image
+    # If motorcycle_bbox is provided, draw it
+    if motorcycle_bbox:
+        m_x1, m_y1, m_x2, m_y2 = motorcycle_bbox
+        # Draw vehicle box with green color, 3px thickness
+        cv2.rectangle(img, (m_x1, m_y1), (m_x2, m_y2), (0, 255, 0), 3)
+        
+        # Add label for the vehicle
+        cv2.putText(img, "MOTORCYCLE", (m_x1, m_y1 - 10), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+    else:
+        # If no bbox is provided, draw a default one around the center
+        height, width = img.shape[0], img.shape[1]
+        # Create a default box covering 60% of the image
+        center_x, center_y = width // 2, height // 2
+        box_width, box_height = int(width * 0.6), int(height * 0.6)
+        x1 = max(0, center_x - box_width // 2)
+        y1 = max(0, center_y - box_height // 2)
+        x2 = min(width, center_x + box_width // 2)
+        y2 = min(height, center_y + box_height // 2)
+        
+        # Draw box with green color and label
+        cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 3)
+        cv2.putText(img, "VEHICLE", (x1, y1 - 10), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+    
+    # Add text labels with better positioning and visibility
+    # Add semi-transparent black background for text
+    overlay = img.copy()
+    cv2.rectangle(overlay, (5, 5), (400, 100), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.3, img, 0.7, 0, img)
+    
+    # Add text with white color and black outline for better visibility
+    cv2.putText(img, "NO HELMET VIOLATION", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
+    if license_plate:
+        cv2.putText(img, f"LICENSE PLATE: {license_plate}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+    
+    # Add timestamp
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cv2.putText(img, f"Time: {timestamp}", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+    
+    # Save the image
     image_path = os.path.join(VIOLATIONS_DIR, f"violation_{violation_id}.jpg")
-    cv2.imwrite(image_path, annotated_img)
+    cv2.imwrite(image_path, img)
     
     return image_path
 
@@ -774,7 +816,7 @@ class Detection:
                     violation_id = str(uuid.uuid4())
                     
                     # Save annotated image
-                    image_path = save_violation_image(frame, frame_result, violation_id, frame_result.get('license_plate'))
+                    image_path = save_violation_image(frame, frame_result, violation_id)
                     
                     # Create violation record
                     violation = {

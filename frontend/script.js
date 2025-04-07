@@ -2,64 +2,84 @@ console.log('Script loaded');
 
 document.addEventListener('DOMContentLoaded', () => {
     console.log('DOM loaded');
-    // API URLs
+    // Constants for API endpoints
     const API_BASE_URL = 'http://127.0.0.1:8000';
-    const UPLOAD_VIDEO_URL = `${API_BASE_URL}/upload-video`;
-    const DETECT_URL = `${API_BASE_URL}/detect`;
-    const VIOLATIONS_URL = `${API_BASE_URL}/violations`;
+    const UPLOAD_URL = `${API_BASE_URL}/upload-video`;
+    const START_DETECTION_URL = `${API_BASE_URL}/detect`;
+    const GET_VIOLATIONS_URL = `${API_BASE_URL}/violations`;
     const GENERATE_CHALLAN_URL = `${API_BASE_URL}/generate-challan`;
-    const LIVE_STREAM_START_URL = `${API_BASE_URL}/live-stream/start`;
-    const LIVE_STREAM_STOP_URL = `${API_BASE_URL}/live-stream/stop`;
+    const GET_CHALLAN_URL = `${API_BASE_URL}/get-challan`;
+    
+    // Comment out live stream endpoint URLs
+    // const LIVE_STREAM_START_URL = `${API_BASE_URL}/live-stream/start`;
+    // const LIVE_STREAM_STOP_URL = `${API_BASE_URL}/live-stream/stop`;
 
-    // DOM Elements
+    // DOM elements
+    const videoFileInput = document.getElementById('video-upload');
     const uploadArea = document.getElementById('upload-area');
-    const fileInput = document.getElementById('video-upload');
     const progressContainer = document.getElementById('progress-container');
     const progressBar = document.getElementById('progress-bar');
     const progressText = document.getElementById('progress-text');
     const videoPreview = document.getElementById('video-preview');
     const previewPlayer = document.getElementById('preview-player');
-    const uploadBtn = document.getElementById('upload-btn');
     const startDetectionBtn = document.getElementById('start-detection-btn');
     const detectionLoader = document.getElementById('detection-loader');
     const violationsContainer = document.getElementById('violations-container');
-    const violationCardTemplate = document.getElementById('violation-card-template');
     const toast = document.getElementById('toast');
     const modal = document.getElementById('modal');
     const closeModal = document.querySelector('.close-modal');
     const closeModalBtn = document.getElementById('close-modal-btn');
     const downloadChallanBtn = document.getElementById('download-challan-btn');
-    const modalTitle = document.getElementById('modal-title');
-    const modalBody = document.getElementById('modal-body');
+    const violationCardTemplate = document.getElementById('violation-card-template');
 
-    // Live stream elements
-    const startStreamBtn = document.getElementById('start-stream-btn');
-    const stopStreamBtn = document.getElementById('stop-stream-btn');
-    const liveStreamPreview = document.getElementById('live-stream-preview');
-    const streamLoader = document.getElementById('stream-loader');
-    const streamPlaceholder = document.querySelector('.stream-placeholder');
+    // Comment out live stream elements
+    // const startStreamBtn = document.getElementById('start-stream-btn');
+    // const stopStreamBtn = document.getElementById('stop-stream-btn');
+    // const liveStreamPreview = document.getElementById('live-stream-preview');
+    // const streamLoader = document.getElementById('stream-loader');
+    // const streamPlaceholder = document.querySelector('.stream-placeholder');
 
-    // State variables
-    let selectedFile = null;
-    let uploadedVideoPath = null;
+    // State management
+    let uploadedFile = null;
+    let uploadedFileName = '';
+    let detectionInProgress = false;
     let pollingInterval = null;
-    let currentViolations = [];
-    let streamActive = false;
+    let currentViolationsCount = 0;
+    // Comment out stream state
+    // let streamActive = false;
 
     // Event Listeners
-    uploadArea.addEventListener('click', () => fileInput.click());
-    fileInput.addEventListener('change', handleFileSelect);
-    uploadArea.addEventListener('dragover', handleDragOver);
-    uploadArea.addEventListener('dragleave', handleDragLeave);
-    uploadArea.addEventListener('drop', handleDrop);
-    startDetectionBtn.addEventListener('click', startDetection);
-    closeModal.addEventListener('click', () => modal.style.display = 'none');
-    closeModalBtn.addEventListener('click', () => modal.style.display = 'none');
-    downloadChallanBtn.addEventListener('click', downloadChallan);
+    if (uploadArea) {
+        uploadArea.addEventListener('click', () => videoFileInput.click());
+        uploadArea.addEventListener('dragover', handleDragOver);
+        uploadArea.addEventListener('dragleave', handleDragLeave);
+        uploadArea.addEventListener('drop', handleDrop);
+    } else {
+        console.error('Upload area element not found');
+    }
 
-    // Hide the upload button since we've integrated upload + detection
-    if (uploadBtn) {
-        uploadBtn.style.display = 'none';
+    if (videoFileInput) {
+        videoFileInput.addEventListener('change', handleFileSelect);
+    } else {
+        console.error('Video input element not found');
+    }
+
+    if (startDetectionBtn) {
+        startDetectionBtn.addEventListener('click', startDetection);
+    } else {
+        console.error('Start detection button not found');
+    }
+
+    if (closeModal) {
+        closeModal.addEventListener('click', () => modal.style.display = 'none');
+    }
+
+    if (closeModalBtn) {
+        closeModalBtn.addEventListener('click', () => modal.style.display = 'none');
+    }
+
+    if (downloadChallanBtn) {
+        downloadChallanBtn.addEventListener('click', downloadChallan);
     }
 
     // File handling functions
@@ -98,49 +118,54 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function processSelectedFile(file) {
-        selectedFile = file;
-        const videoUrl = URL.createObjectURL(file);
-        previewPlayer.src = videoUrl;
-        videoPreview.style.display = 'block';
-        if (uploadBtn) {
-            uploadBtn.disabled = false;
+        uploadedFile = file;
+        uploadedFileName = file.name;
+        
+        if (previewPlayer) {
+            const videoUrl = URL.createObjectURL(file);
+            previewPlayer.src = videoUrl;
+        }
+        
+        if (videoPreview) {
+            videoPreview.style.display = 'block';
         }
 
         // Update upload area to show selected file name
-        const fileName = document.createElement('p');
-        fileName.textContent = `Selected file: ${file.name}`;
-        fileName.classList.add('selected-file-name');
-        
-        // Remove previous file name if exists
-        const prevFileName = uploadArea.querySelector('.selected-file-name');
-        if (prevFileName) {
-            uploadArea.removeChild(prevFileName);
+        if (uploadArea) {
+            const fileName = document.createElement('p');
+            fileName.textContent = `Selected file: ${file.name}`;
+            fileName.classList.add('selected-file-name');
+            
+            // Remove previous file name if exists
+            const prevFileName = uploadArea.querySelector('.selected-file-name');
+            if (prevFileName) {
+                uploadArea.removeChild(prevFileName);
+            }
+            
+            uploadArea.appendChild(fileName);
         }
-        
-        uploadArea.appendChild(fileName);
     }
 
     // API interaction functions
     async function uploadVideo() {
-        if (!selectedFile) {
+        if (!uploadedFile) {
             showToast('Please select a video file first');
             return;
         }
 
         try {
-            progressContainer.style.display = 'block';
-            if (uploadBtn) {
-                uploadBtn.disabled = true;
+            if (progressContainer) {
+                progressContainer.style.display = 'block';
             }
 
             const formData = new FormData();
-            formData.append('file', selectedFile);
+            formData.append('file', uploadedFile);
 
             const xhr = new XMLHttpRequest();
-            xhr.open('POST', UPLOAD_VIDEO_URL, true);
+            xhr.open('POST', UPLOAD_URL, true);
 
             xhr.upload.onprogress = (e) => {
-                if (e.lengthComputable) {
+                if (e.lengthComputable && progressBar && progressText) {
                     const percentComplete = Math.round((e.loaded / e.total) * 100);
                     progressBar.style.width = `${percentComplete}%`;
                     progressText.textContent = `${percentComplete}%`;
@@ -151,35 +176,28 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (xhr.status >= 200 && xhr.status < 300) {
                     const response = JSON.parse(xhr.responseText);
                     // Use path instead of filename for the video_path
-                    uploadedVideoPath = response.path;
+                    uploadedFileName = response.path;
                     showToast('Video uploaded successfully');
-                    startDetectionBtn.disabled = false;
+                    if (startDetectionBtn) {
+                        startDetectionBtn.disabled = false;
+                    }
                 } else {
                     showToast('Upload failed: ' + xhr.statusText);
-                    if (uploadBtn) {
-                        uploadBtn.disabled = false;
-                    }
                 }
             };
 
             xhr.onerror = function() {
                 showToast('Upload failed. Please try again');
-                if (uploadBtn) {
-                    uploadBtn.disabled = false;
-                }
             };
 
             xhr.send(formData);
         } catch (error) {
             showToast('Error uploading video: ' + error.message);
-            if (uploadBtn) {
-                uploadBtn.disabled = false;
-            }
         }
     }
 
     async function startDetection() {
-        if (!uploadedVideoPath) {
+        if (!uploadedFileName) {
             showToast('Please upload a video first');
             return;
         }
@@ -191,9 +209,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // Create formData with the exact field name expected by the backend
             const formData = new FormData();
-            formData.append('video_path', uploadedVideoPath);
+            formData.append('video_path', uploadedFileName);
 
-            const response = await fetch(DETECT_URL, {
+            console.log('Sending detection request with video path:', uploadedFileName);
+            
+            const response = await fetch(START_DETECTION_URL, {
                 method: 'POST',
                 body: formData
             });
@@ -218,6 +238,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 startDetectionBtn.disabled = false;
             }
         } catch (error) {
+            console.error('Error starting detection:', error);
             showToast('Error starting detection: ' + error.message);
             startDetectionBtn.disabled = false;
             detectionLoader.style.display = 'none';
@@ -226,9 +247,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function startPollingForViolations() {
         // Initial count of violations before polling
-        const initialViolationCount = currentViolations.length;
+        const initialViolationCount = currentViolationsCount;
         let pollCount = 0;
-        const maxPolls = 60; // Stop polling after 5 minutes (5 seconds interval * 60)
+        const maxPolls = 12; // Poll for 1 minute max (5 seconds interval * 12)
         
         // Show loading indicator
         detectionLoader.style.display = 'flex';
@@ -239,25 +260,36 @@ document.addEventListener('DOMContentLoaded', () => {
         
         pollingInterval = setInterval(async () => {
             pollCount++;
+            console.log(`Polling for violations (${pollCount}/${maxPolls})`);
             
             try {
                 const newViolations = await fetchViolations();
                 
+                // Debug log
+                console.log(`Current violations: ${newViolations.length}, Initial: ${initialViolationCount}`);
+                
                 // Check if we found new violations or reached max polling attempts
-                if (newViolations.length > initialViolationCount || pollCount >= maxPolls) {
-                    // Stop polling
+                if (pollCount >= maxPolls) {
+                    // Stop polling after max attempts
                     clearInterval(pollingInterval);
                     detectionLoader.style.display = 'none';
                     startDetectionBtn.disabled = false;
                     
-                    // Show appropriate message
                     if (newViolations.length > initialViolationCount) {
                         showToast(`Detection complete! Found ${newViolations.length - initialViolationCount} new violations.`);
                     } else {
                         showToast('Detection complete. No new violations found.');
+                        // Still display existing violations even if no new ones
+                        displayViolations(newViolations, 0);
                     }
-                } else if (pollCount % 4 === 0) {
-                    // Every 20 seconds (4 polls * 5 seconds), update the user
+                } else if (newViolations.length > initialViolationCount) {
+                    // New violations found - stop polling
+                    clearInterval(pollingInterval);
+                    detectionLoader.style.display = 'none';
+                    startDetectionBtn.disabled = false;
+                    showToast(`Detection complete! Found ${newViolations.length - initialViolationCount} new violations.`);
+                } else if (pollCount % 2 === 0) {
+                    // Every 10 seconds, update the user
                     showToast('Still processing video... Please wait.');
                 }
             } catch (error) {
@@ -269,7 +301,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function fetchViolations() {
         try {
-            const response = await fetch(VIOLATIONS_URL);
+            console.log('Fetching violations from server');
+            const response = await fetch(GET_VIOLATIONS_URL);
             
             if (!response.ok) {
                 throw new Error(`HTTP error! status: ${response.status}`);
@@ -277,13 +310,13 @@ document.addEventListener('DOMContentLoaded', () => {
             
             const data = await response.json();
             const violations = data.violations || [];
+            console.log(`Received ${violations.length} violations from server`);
             
-            // Store current violations for comparison
-            const previousCount = currentViolations.length;
-            currentViolations = violations;
+            // Always display violations, even if count didn't change
+            displayViolations(violations, 0);
             
-            // Display violations
-            displayViolations(violations, previousCount);
+            // Store current violations count
+            currentViolationsCount = violations.length;
             
             return violations;
         } catch (error) {
@@ -387,16 +420,21 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function showToast(message) {
-        toast.textContent = message;
-        toast.classList.add('show');
-        
-        setTimeout(() => {
-            toast.classList.remove('show');
-        }, 3000);
+        if (toast) {
+            toast.textContent = message;
+            toast.classList.add('show');
+            
+            setTimeout(() => {
+                toast.classList.remove('show');
+            }, 3000);
+        } else {
+            console.log("Toast message:", message);
+        }
     }
 
     // Remove any existing stream button event listeners
     // and replace with this new implementation
+    /* Commented out live stream functionality
     function initializeStreamControls() {
         const startStreamBtn = document.getElementById('start-stream-btn');
         const stopStreamBtn = document.getElementById('stop-stream-btn');
@@ -531,4 +569,5 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Call the initialization function
     initializeStreamControls();
+    */
 })
